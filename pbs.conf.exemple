@@ -1,0 +1,9 @@
+PBS_HOST="pbs.example.local:8007"
+PBS_USER="root@pam"
+PBS_TOKEN_ID="pbsdelete"
+PBS_TOKEN_SECRET="CHANGE_ME"
+PBS_NODE="pbs01"
+PBS_DATASTORES=("DATASTORE_EXAMPLE")
+PBS_NAMESPACES=("NAMESPACE1" "NAMESPACE2")
+DRY_RUN=1
+LOG="log_VMtoDelete_$(date +%F_%H%M).log"

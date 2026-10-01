@@ -72,7 +72,7 @@ select_pool_prefix() {
     log "Préfixe sélectionné : $PREFIX"
 }
 
-# fonction de recherche des VM et CT appartenant au pool
+# 2 : fonction de recherche des VM et CT appartenant au pool
 discover_targets() {
     log "--- 2️⃣ Découverte des pools Proxmox avec préfixe '$PREFIX' ---"
 
@@ -119,7 +119,7 @@ display_targets() {
     done
 }
 
-# Fonction d'exclusion et confirmation de suppression des ressource
+# 3 : Fonction d'exclusion et confirmation de suppression des ressource
 exclude_targets() {
     log "\n--- 3️⃣ Liste des VMs/CTs détectés ---"
     display_targets "❔️"
@@ -158,18 +158,19 @@ exclude_targets() {
 
 # Extraction de l'UPID depuis la sortie JSON de pvesh ("UPID:..." quoté)
 extract_upid() {
-    local raw
-    raw=$(cat)                       # lit tout stdin
+    local raw u
+    raw=$(cat)
 
-    # Cas 1 : JSON objet {"data":"UPID:..."}
-    local u
+    # Cas 1 : JSON ({"data":"UPID:..."} ou "UPID:..." nu)
     u=$(printf '%s' "$raw" | jq -r '
             if type=="object" then (.data // "")
             elif type=="string" then .
             else "" end' 2>/dev/null) || u=""
 
-    # Cas 2 : chaîne JSON nue "UPID:..." ou texte brut
-    [[ "$u" != UPID:* ]] && u=$(printf '%s' "$raw" | tr -d '"' | grep -m1 -o 'UPID:[^ ]*')
+    # Cas 2 : texte brut ou JSON non parsable
+    if [[ "$u" != UPID:* ]]; then
+        u=$(printf '%s' "$raw" | tr -d '"' | grep -m1 -o 'UPID:[^ ,}]*') || u=""
+    fi
 
     [[ "$u" == UPID:* ]] && printf '%s' "$u"
     return 0
@@ -209,11 +210,12 @@ wait_task() {
     done
 }
 
-#Fonction d'arrêt forcé des VM sélectionnées
+# 4 : Fonction d'arrêt forcé des VM sélectionnées
 stop_local_vms() {
     log "--- 4️⃣ Arrêt forcé des VMs/CTs ---"
 
     local t type vmid node name status errfile upid tries
+    local -a stop_args
     for t in "${TARGETS[@]}"; do
         IFS=: read -r type vmid node name <<< "$t"
 
@@ -228,10 +230,13 @@ stop_local_vms() {
         fi
 
         log "  🛑 Forçage de l'arrêt de $type/$vmid ($name) sur $node..."
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            log "     [DRY_RUN] pvesh create /nodes/${node}/${type}/${vmid}/status/stop --overrule-shutdown 1"
+            continue
+        fi
 
-        errfile=$(mktemp)
         # --- Construction des arguments selon le type ---
-        local -a stop_args=( --overrule-shutdown 1 --timeout 30 )
+        stop_args=( --overrule-shutdown 1 --timeout 30 )
         if [[ "$type" == "qemu" ]]; then
             stop_args+=( --skiplock 1 )   # root@pam requis, QEMU seulement
         fi
@@ -278,73 +283,9 @@ stop_local_vms() {
     done
 }
 
-# Fonction de suppression des backups locaux (vzdump)
-delete_local_backups() {
-    log "\n--- 5️⃣ Suppression des backups vzdump locaux (option) ---"
-    for t in "${TARGETS[@]}"; do
-        IFS=':' read -r type vmid node name <<< "$t"
-        for store in $(pvesh get /nodes/$node/storage --output-format json | jq -r '.[] | select(.content | test("backup")) | .storage'); do
-            if [[ "$DRY_RUN" -eq 1 ]]; then
-                log "  [DRY_RUN] Recherche et suppression des backups VMID $vmid sur $store"
-            else
-                # Suppression des fichiers vzdump pour VMID
-                ssh "$node" "find /var/lib/vz/dump -name '*${vmid}*' -delete"
-                log "  ✅ Backups locaux VMID $vmid supprimés sur $store"
-            fi
-        done
-    done
-}
-
-# Fonction de suppression des backups sur le serveur PBS (en utilisant l'API)
-delete_pbs_backups() {
-    log "\n--- 6️⃣ Suppression des backups sur PBS ---"
-    AUTH="Authorization: PBSAPIToken=${PBS_USER}!${PBS_TOKEN_ID}:${PBS_TOKEN_SECRET}"
-    BASE="https://${PBS_HOST}/api2/json"
-    DELETED=0
-    ERRORS=0
-    for PBS_DATASTORE in "${PBS_DATASTORES[@]}"; do
-        for ns in "${PBS_NAMESPACES[@]}"; do
-            log "Datastore $PBS_DATASTORE / namespace $ns"
-            groups=$(curl -sk -H "$AUTH" \
-                "${BASE}/admin/datastore/${PBS_DATASTORE}/groups?ns=${ns}" \
-                | jq -r '.data[]? | "\(.["backup-type"] // ""):\(.["backup-id"] // "")"' \
-                | grep -v '^:')
-            for t in "${TARGETS[@]}"; do
-                IFS=':' read -r type vmid node name <<< "$t"
-                for gtype in vm ct; do
-                    group="${gtype}:${vmid}"
-                    if echo "$groups" | grep -q "^${group}$"; then
-                        if [[ "$DRY_RUN" -eq 1 ]]; then
-                            log "  [DRY_RUN] Suppression PBS $gtype/$vmid dans $ns"
-                        else
-                            http=$(curl -sk -o /tmp/pbs_del_${ns}_${gtype}_${vmid}.json \
-                                -w "%{http_code}" \
-                                -X DELETE \
-                                -H "$AUTH" \
-                                "${BASE}/admin/datastore/${PBS_DATASTORE}/groups?backup-type=${gtype}&backup-id=${vmid}&ns=${ns}")
-                            if [ "$http" = "200" ]; then
-                                log "    ✅ Supprimé $gtype/$vmid dans $ns"
-                                ((DELETED++))
-                            else
-                                log "    ❌ Erreur HTTP $http pour $gtype/$vmid dans $ns"
-                                cat /tmp/pbs_del_${ns}_${gtype}_${vmid}.json
-                                ((ERRORS++))
-                            fi
-                        fi
-                    else
-                        log "  ➖ Groupe $gtype/$vmid absent dans $ns"
-                    fi
-                done
-            done
-        done
-    done
-    log "\nRésultat PBS : Groupes supprimés : $DELETED | Erreurs : $ERRORS"
-    log "Pour libérer l'espace disque, lancez : proxmox-backup-manager garbage-collection start <datastore>"
-}
-
-# Fonction de suppression des VM et CT (possible seulement si arrêtés)
-delete_local_backups() {
-    log "\n--- 7️⃣ Suppression des backups vzdump locaux ---"
+# 5 : Fonction d'effacement des backups locaux (vzdump)
+remove_local_backups() {
+    log "\n--- 5️⃣ Suppression des backups vzdump locaux ---"
     local t type vmid node name store path json
 
     for t in "${TARGETS[@]}"; do
@@ -374,7 +315,123 @@ delete_local_backups() {
     done
 }
 
-# Fonction de lancement (manuel ou auto, au choix) du garbage collector (nettoyage des chunks) 
+# 6 : Fonction de suppression des backups sur le serveur PBS (en utilisant l'API)
+remove_pbs_backups() {
+    log "\n--- 6️⃣ Suppression des backups sur PBS ---"
+    AUTH="Authorization: PBSAPIToken=${PBS_USER}!${PBS_TOKEN_ID}:${PBS_TOKEN_SECRET}"
+    BASE="https://${PBS_HOST}/api2/json"
+    DELETED=0
+    ERRORS=0
+    for PBS_DATASTORE in "${PBS_DATASTORES[@]}"; do
+        for ns in "${PBS_NAMESPACES[@]}"; do
+            log "Datastore $PBS_DATASTORE / namespace $ns"
+            groups=$(curl -sk -H "$AUTH" \
+                "${BASE}/admin/datastore/${PBS_DATASTORE}/groups?ns=${ns}" \
+                | jq -r '.data[]? | "\(.["backup-type"] // ""):\(.["backup-id"] // "")"' \
+                | grep -v '^:')
+            for t in "${TARGETS[@]}"; do
+                IFS=':' read -r type vmid node name <<< "$t"
+                for gtype in vm ct; do
+                    group="${gtype}:${vmid}"
+                    if echo "$groups" | grep -q "^${group}$"; then
+                        if [[ "$DRY_RUN" -eq 1 ]]; then
+                            log "  [DRY_RUN] Suppression PBS $gtype/$vmid dans $ns"
+                        else
+                            http=$(curl -sk -o /tmp/pbs_del_${ns}_${gtype}_${vmid}.json \
+                                -w "%{http_code}" \
+                                -X DELETE \
+                                -H "$AUTH" \
+                                "${BASE}/admin/datastore/${PBS_DATASTORE}/groups?backup-type=${gtype}&backup-id=${vmid}&ns=${ns}")
+                            if [ "$http" = "200" ]; then
+                                log "    ✅ Supprimé $gtype/$vmid dans $ns"
+                                DELETED=$((DELETED + 1))
+                            else
+                                log "    ❌ Erreur HTTP $http pour $gtype/$vmid dans $ns"
+                                cat /tmp/pbs_del_${ns}_${gtype}_${vmid}.json
+                                ERRORS=$((ERRORS + 1))
+                            fi
+                        fi
+                    else
+                        log "  ➖ Groupe $gtype/$vmid absent dans $ns"
+                    fi
+                done
+            done
+        done
+    done
+    log "\nRésultat PBS : Groupes supprimés : $DELETED | Erreurs : $ERRORS"
+    log "Pour libérer l'espace disque, lancez : proxmox-backup-manager garbage-collection start <datastore>"
+}
+
+# Fonction de suppression des VM et CT (possible seulement si arrêtés)
+delete_local_vms() {
+    log "--- 7️⃣ Suppression locale des VMs/CTs ---"
+
+    local t type vmid node name errfile raw upid rc lk lockfile
+    for t in "${TARGETS[@]}"; do
+        IFS=: read -r type vmid node name <<< "$t"
+        log "  🗑️ Suppression de $type/$vmid ($name) sur $node..."
+
+        # --- 0. Mode simulation ---
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            log "     [DRY_RUN] pvesh delete /nodes/${node}/${type}/${vmid} --purge 1"
+            continue
+        fi
+
+        # --- 1. La ressource existe-t-elle encore ? ---
+        if ! pvesh get "/nodes/${node}/${type}/${vmid}/status/current" \
+             --output-format json >/dev/null 2>&1; then
+            log "     ➖ Introuvable sur $node — probablement déjà supprimée"
+            continue
+        fi
+
+        # --- 2. Verrou résiduel bloquant ? ---
+        lk=$(pvesh get "/nodes/${node}/${type}/${vmid}/status/current" \
+             --output-format json 2>/dev/null \
+             | jq -r '.lock // .data.lock // ""' 2>/dev/null) || lk=""
+        if [[ -n "$lk" ]]; then
+            log "     🔒 Verrou actif (lock: $lk) — tentative de levée"
+            lockfile="/var/lock/qemu-server/lock-${vmid}.conf"
+            [[ "$type" == "lxc" ]] && lockfile="/run/lock/lxc/pve-config-${vmid}.lock"
+            if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+                   -o ConnectTimeout=5 "root@$node" "rm -f '$lockfile'" 2>/dev/null; then
+                log "     🔓 Fichier de verrou retiré"
+            else
+                log "     ⚠️  Impossible de retirer le verrou (SSH ou permission)"
+            fi
+        fi
+
+        # --- 3. Suppression via l'API ---
+        errfile=$(mktemp)
+        raw=$(pvesh delete "/nodes/${node}/${type}/${vmid}" \
+              --purge 1 --destroy-unreferenced-disks 1 \
+              --output-format json 2>"$errfile") && rc=0 || rc=$?
+        upid=$(printf '%s' "$raw" | extract_upid)
+
+        # --- 4. Diagnostic si aucun UPID ---
+        if [[ -z "$upid" ]]; then
+            log "     ❌ Pas d'UPID (code pvesh = $rc)"
+            [[ -n "$raw" ]] && log "        Sortie : $(printf '%s' "$raw" | head -c 300)"
+            if [[ -s "$errfile" ]]; then
+                while IFS= read -r l; do log "        ⚠️  $l"; done < "$errfile"
+            else
+                log "        (stderr vide — sortie probablement mal parsée)"
+            fi
+            rm -f "$errfile"
+            continue
+        fi
+        rm -f "$errfile"
+
+        # --- 5. Attente de la fin de tâche ---
+        if wait_task "$upid"; then
+            log "     ✅ $type/$vmid ($name) supprimé."
+        else
+            log "     ❌ Tâche échouée — UPID : $upid"
+            log "        Log : pvesh get /nodes/${node}/tasks/${upid}/log"
+        fi
+    done
+}
+
+# 8 : Fonction de lancement (manuel ou auto, au choix) du garbage collector (nettoyage des chunks) 
 run_garbage_collection() {
     log "\n--- 8️⃣ Garbage Collection PBS ---"
     log "ℹ️  La GC libère l'espace des chunks orphelins après suppression des backups."
@@ -424,8 +481,8 @@ main() {
     discover_targets
     exclude_targets
     stop_local_vms
-    delete_local_backups
-    delete_pbs_backups
+    remove_local_backups
+    remove_pbs_backups
     delete_local_vms
     run_garbage_collection
     log "\n--- Nettoyage terminé ---"

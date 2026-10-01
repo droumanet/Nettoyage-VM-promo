@@ -1,11 +1,11 @@
 #!/bin/bash
 #===============================================================================
-# proxmox_cleanup.sh
+# proxmox_cleanup.sh        v2.0
 # Nettoyage complet et modulaire Proxmox VE + PBS (v4.1.6)
 # - Sélection interactive des pools, exclusions, confirmation
-# - Suppression VMs/CTs locales (stop + destroy --purge)
 # - Suppression backups vzdump locaux
 # - Suppression backups PBS (API officielle)
+# - Suppression VMs/CTs locales (stop + destroy --purge)
 #===============================================================================
 
 set -Eeuo pipefail
@@ -52,8 +52,8 @@ PREFIXES=(
 log() { echo -e "$1" | tee -a "$LOG"; }
 log_exit() {
     # Usage : log_exit "message d'erreur" [code_sortie]
-    log "🛑 $1"
-    log "=== (ARRÊT DU SCRIPT — $(date '+%F %T')) ==="
+    log "💣️ $1"
+    log "=== 🛑 (ARRÊT DU SCRIPT — $(date '+%F %T')) 🛑 ==="
     log ""
     exit "${2:-1}"   # code de sortie 1 par défaut, personnalisable
 }
@@ -158,11 +158,27 @@ exclude_targets() {
 
 # Extraction de l'UPID depuis la sortie JSON de pvesh ("UPID:..." quoté)
 extract_upid() {
-    tr -d '"' | grep -m1 -o '^UPID:.*' || true
+    local raw
+    raw=$(cat)                       # lit tout stdin
+
+    # Cas 1 : JSON objet {"data":"UPID:..."}
+    local u
+    u=$(printf '%s' "$raw" | jq -r '
+            if type=="object" then (.data // "")
+            elif type=="string" then .
+            else "" end' 2>/dev/null) || u=""
+
+    # Cas 2 : chaîne JSON nue "UPID:..." ou texte brut
+    [[ "$u" != UPID:* ]] && u=$(printf '%s' "$raw" | tr -d '"' | grep -m1 -o 'UPID:[^ ]*')
+
+    [[ "$u" == UPID:* ]] && printf '%s' "$u"
+    return 0
 }
 
 wait_task() {
     local upid="$1" node status running exitstatus tries=0
+    [[ -z "$upid" ]] && return 1 # cas upid vide
+
     node=$(printf '%s' "$upid" | cut -d: -f2)   # l'UPID contient le nœud
 
     while true; do
@@ -173,8 +189,8 @@ wait_task() {
             continue
         }
 
-        running=$(printf '%s' "$status" | jq -r '.data.running // ""')    || running=""
-        exitstatus=$(printf '%s' "$status" | jq -r '.data.exitstatus // ""') || exitstatus=""
+        running=$(printf '%s' "$status"    | jq -r '.running    // .data.running    // ""' 2>/dev/null) || running=""
+        exitstatus=$(printf '%s' "$status" | jq -r '.exitstatus // .data.exitstatus // ""' 2>/dev/null) || exitstatus=""
 
         if [[ "$running" == "1" ]]; then
             sleep 2; tries=$((tries+1))
@@ -194,7 +210,6 @@ wait_task() {
 }
 
 #Fonction d'arrêt forcé des VM sélectionnées
-
 stop_local_vms() {
     log "--- 4️⃣ Arrêt forcé des VMs/CTs ---"
 
@@ -205,7 +220,7 @@ stop_local_vms() {
         # --- État actuel de la ressource ---
         status=$(pvesh get "/nodes/${node}/${type}/${vmid}/status/current" \
                  --output-format json 2>/dev/null \
-                 | jq -r '.data.status // ""') || status=""
+                 | jq -r '.status // .data.status // ""') || status=""
 
         if [[ "$status" != "running" ]]; then
             log "  ⏭️ $type/$vmid ($name) déjà à l'arrêt (état : ${status:-inconnu})"
@@ -215,8 +230,15 @@ stop_local_vms() {
         log "  🛑 Forçage de l'arrêt de $type/$vmid ($name) sur $node..."
 
         errfile=$(mktemp)
+        # --- Construction des arguments selon le type ---
+        local -a stop_args=( --overrule-shutdown 1 --timeout 30 )
+        if [[ "$type" == "qemu" ]]; then
+            stop_args+=( --skiplock 1 )   # root@pam requis, QEMU seulement
+        fi
+
+        errfile=$(mktemp)
         upid=$(pvesh create "/nodes/${node}/${type}/${vmid}/status/stop" \
-               --output-format json 2>"$errfile" | extract_upid) || true
+               "${stop_args[@]}" --output-format json 2>"$errfile" | extract_upid) || true
 
         # Avertissements non fatals (ex : lock de backup en cours)
         if [[ -s "$errfile" ]]; then
@@ -241,7 +263,7 @@ stop_local_vms() {
         while true; do
             status=$(pvesh get "/nodes/${node}/${type}/${vmid}/status/current" \
                      --output-format json 2>/dev/null \
-                     | jq -r '.data.status // ""') || status=""
+                     | jq -r '.status // .data.status // ""') || status=""
             [[ "$status" == "stopped" ]] && break
             sleep 2
             tries=$((tries+1))
@@ -256,46 +278,9 @@ stop_local_vms() {
     done
 }
 
-# Fonction de suppression des VM et CT (possible seulement si arrêtés)
-delete_local_vms() {
-    log "--- 5️⃣ Suppression locale des VMs/CTs ---"
-
-    local t type vmid node name st errfile upid
-    for t in "${TARGETS[@]}"; do
-        IFS=: read -r type vmid node name <<< "$t"
-        log "  🗑️ Suppression de $type/$vmid ($name) sur $node..."
-
-        # --- DÉBUT DU BLOC CORRIGÉ ---
-        errfile=$(mktemp)
-        upid=$(pvesh delete "/nodes/${node}/${type}/${vmid}" --purge 1 \
-               --output-format json 2>"$errfile" | extract_upid) || true
-
-        # Avertissements non fatals (ex : disques LVM déjà absents)
-        if [[ -s "$errfile" ]]; then
-            while IFS= read -r line; do
-                log "  ⚠️  $line"
-            done < "$errfile"
-        fi
-        rm -f "$errfile"
-
-        if [[ -n "$upid" ]]; then
-            if wait_task "$upid"; then
-                log "  ✅ $type/$vmid ($name) supprimé."
-            else
-                log "  ❌ Tâche de suppression de $type/$vmid échouée — voir le log de tâche dans l'UI"
-            fi
-        else
-            log "  ❌ $type/$vmid ($name) : pas d'UPID — suppression non lancée"
-        fi
-        # --- FIN DU BLOC CORRIGÉ ---
-
-    done
-}
-
-#------------------------------ 5. SUPPRESSION BACKUPS LOCAUX -----------------
 # Fonction de suppression des backups locaux (vzdump)
 delete_local_backups() {
-    log "\n--- 6️⃣ Suppression des backups vzdump locaux (option) ---"
+    log "\n--- 5️⃣ Suppression des backups vzdump locaux (option) ---"
     for t in "${TARGETS[@]}"; do
         IFS=':' read -r type vmid node name <<< "$t"
         for store in $(pvesh get /nodes/$node/storage --output-format json | jq -r '.[] | select(.content | test("backup")) | .storage'); do
@@ -312,7 +297,7 @@ delete_local_backups() {
 
 # Fonction de suppression des backups sur le serveur PBS (en utilisant l'API)
 delete_pbs_backups() {
-    log "\n--- 7️⃣ Suppression des backups sur PBS ---"
+    log "\n--- 6️⃣ Suppression des backups sur PBS ---"
     AUTH="Authorization: PBSAPIToken=${PBS_USER}!${PBS_TOKEN_ID}:${PBS_TOKEN_SECRET}"
     BASE="https://${PBS_HOST}/api2/json"
     DELETED=0
@@ -355,6 +340,38 @@ delete_pbs_backups() {
     done
     log "\nRésultat PBS : Groupes supprimés : $DELETED | Erreurs : $ERRORS"
     log "Pour libérer l'espace disque, lancez : proxmox-backup-manager garbage-collection start <datastore>"
+}
+
+# Fonction de suppression des VM et CT (possible seulement si arrêtés)
+delete_local_backups() {
+    log "\n--- 7️⃣ Suppression des backups vzdump locaux ---"
+    local t type vmid node name store path json
+
+    for t in "${TARGETS[@]}"; do
+        IFS=':' read -r type vmid node name <<< "$t"
+
+        # Ne garder que les stockages RÉELLEMENT locaux (dir/nfs/cifs)
+        json=$(pvesh get "/nodes/${node}/storage" --output-format json 2>/dev/null) || json="[]"
+        while IFS=$'\t' read -r store path; do
+            [[ -z "$store" ]] && continue
+            path="${path:-/var/lib/vz}"
+
+            if [[ "$DRY_RUN" -eq 1 ]]; then
+                log "  [DRY_RUN] find ${path}/dump -name 'vzdump-*-${vmid}-*' sur ${node} (store: ${store})"
+                continue
+            fi
+
+            ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+                -o ConnectTimeout=5 "root@${node}" \
+                "find '${path}/dump' -maxdepth 1 -name 'vzdump-*-${vmid}-*' -print -delete" \
+                2>/dev/null \
+                && log "  ✅ Backups VMID ${vmid} nettoyés sur ${store} (${path}/dump)" \
+                || log "  ⚠️  Échec ou aucun backup VMID ${vmid} sur ${store}"
+        done < <(printf '%s' "$json" | jq -r '
+            .[] | select((.content // "") | test("backup"))
+                | select((.type // "") | test("^(dir|nfs|cifs|glusterfs)$"))
+                | "\(.storage)\t\(.path // "")"')
+    done
 }
 
 # Fonction de lancement (manuel ou auto, au choix) du garbage collector (nettoyage des chunks) 
@@ -400,14 +417,16 @@ run_garbage_collection() {
 
 
 #------------------------------ 7. MAIN ----------------------------------------
+# Note : l'ordre des op. est important. Suppr. d'abord les backups avant les
+#        VM pour éviter d'avoir des backups orphelins (plus de références)
 main() {
     select_pool_prefix
     discover_targets
     exclude_targets
     stop_local_vms
-    delete_local_vms
     delete_local_backups
     delete_pbs_backups
+    delete_local_vms
     run_garbage_collection
     log "\n--- Nettoyage terminé ---"
 }

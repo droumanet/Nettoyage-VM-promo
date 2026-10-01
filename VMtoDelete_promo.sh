@@ -456,7 +456,7 @@ run_garbage_collection() {
 
         http=$(curl -sk -o /tmp/pbs_gc_${store}.json -w "%{http_code}" \
                -X POST -H "$AUTH" \
-               "${BASE}/admin/datastore/${store}/garbage-collection")
+               "${BASE}/nodes/${PBS_NODE}/datastore/${store}/gc")
         if [ "$http" != "200" ]; then
             log "  ❌ Impossible de lancer la GC sur '$store' (HTTP $http) :"
             log "     $(head -c 200 /tmp/pbs_gc_${store}.json)"

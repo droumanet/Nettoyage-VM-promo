@@ -48,6 +48,10 @@ PREFIXES=(
     "DEVOPS"
 )
 
+# Variables construites pour appels API dans remove_pbs_backup et run_garbage_collection
+AUTH="Authorization: PBSAPIToken=${PBS_USER}!${PBS_TOKEN_ID}:${PBS_TOKEN_SECRET}"
+BASE="https://${PBS_HOST}/api2/json"
+
 # fonctions d'enregistrement dans le fichier log
 log() { echo -e "$1" | tee -a "$LOG"; }
 log_exit() {
@@ -318,8 +322,6 @@ remove_local_backups() {
 # 6 : Fonction de suppression des backups sur le serveur PBS (en utilisant l'API)
 remove_pbs_backups() {
     log "\n--- 6️⃣ Suppression des backups sur PBS ---"
-    AUTH="Authorization: PBSAPIToken=${PBS_USER}!${PBS_TOKEN_ID}:${PBS_TOKEN_SECRET}"
-    BASE="https://${PBS_HOST}/api2/json"
     DELETED=0
     ERRORS=0
     for PBS_DATASTORE in "${PBS_DATASTORES[@]}"; do

@@ -472,8 +472,7 @@ run_garbage_collection() {
     log "ℹ️  Vous pouvez fermer cette session sans risque : la tâche continue côté PBS."
 }
 
-
-#------------------------------ 7. MAIN ----------------------------------------
+#------------------------------ 9. MAIN ----------------------------------------
 # Note : l'ordre des op. est important. Suppr. d'abord les backups avant les
 #        VM pour éviter d'avoir des backups orphelins (plus de références)
 main() {

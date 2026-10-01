@@ -1,0 +1,35 @@
+AVERTISSEMENT – UTILISATION DU SCRIPT
+
+Ce script est fourni librement, à titre informatif et pratique, sous licence MIT.
+
+Il permet notamment d’automatiser certaines opérations d’administration sur des pools,
+des machines virtuelles et/ou des sauvegardes. Son utilisation peut entraîner la
+suppression définitive de données, de sauvegardes, de machines virtuelles ou de
+ressources associées.
+
+L’utilisateur est seul responsable :
+
+- de la vérification du contenu et du fonctionnement du script ;
+- de son adaptation à son environnement ;
+- de la configuration des paramètres et des chemins utilisés ;
+- de la réalisation de sauvegardes préalables ;
+- de la validation des ressources ciblées avant toute exécution ;
+- des conséquences résultant de son utilisation, de sa modification ou de son intégration.
+
+Le script doit être testé dans un environnement de test avant toute utilisation en
+production. Il est recommandé de l’exécuter avec les droits les plus faibles possibles
+et de vérifier attentivement les journaux ainsi que les commandes de suppression.
+
+Le script est fourni « en l’état », sans garantie d’aucune sorte, expresse ou implicite.
+L’auteur ne garantit notamment pas son exactitude, sa fiabilité, sa disponibilité, son
+adéquation à un usage particulier, son absence d’erreur ou son fonctionnement dans tous
+les environnements.
+
+Dans les limites autorisées par la loi applicable, l’auteur ne pourra être tenu
+responsable d’aucun dommage direct ou indirect, perte de données, perte de sauvegardes,
+interruption de service, perte d’exploitation, erreur de configuration ou conséquence
+résultant de l’utilisation, de l’impossibilité d’utiliser, de la modification ou de la
+distribution de ce script.
+
+L’utilisation de ce script implique l’acceptation de ces conditions ainsi que des
+conditions de la licence MIT incluse dans ce dépôt.

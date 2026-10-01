@@ -64,7 +64,7 @@ log_exit() {
 
 # fonction de validation du préfixe de pool
 select_pool_prefix() {
-    log "\n--- 1️⃣ Sélection du préfixe de pool ---"
+    log "\n 1️⃣ Sélection du préfixe de pool ---"
     for i in "${!PREFIXES[@]}"; do
         printf '  %d) %s\n' "$((i + 1))" "${PREFIXES[$i]}"
     done
@@ -78,7 +78,7 @@ select_pool_prefix() {
 
 # 2 : fonction de recherche des VM et CT appartenant au pool
 discover_targets() {
-    log "--- 2️⃣ Découverte des pools Proxmox avec préfixe '$PREFIX' ---"
+    log " 2️⃣ Découverte des pools Proxmox avec préfixe '$PREFIX' ---"
 
     POOLS=$(pvesh get /pools --output-format json \
             | jq -r --arg p "$PREFIX" '.[] | select(.poolid | startswith($p)) | .poolid')
@@ -125,7 +125,7 @@ display_targets() {
 
 # 3 : Fonction d'exclusion et confirmation de suppression des ressource
 exclude_targets() {
-    log "\n--- 3️⃣ Liste des VMs/CTs détectés ---"
+    log "\n 3️⃣ Liste des VMs/CTs détectés ---"
     display_targets "❔️"
     read -rp "Entrez les VMID à exclure ou [entrée] pour valider la sélection : " excl
 	echo ""
@@ -216,7 +216,7 @@ wait_task() {
 
 # 4 : Fonction d'arrêt forcé des VM sélectionnées
 stop_local_vms() {
-    log "--- 4️⃣ Arrêt forcé des VMs/CTs ---"
+    log " 4️⃣ Arrêt forcé des VMs/CTs ---"
 
     local t type vmid node name status errfile upid tries
     local -a stop_args
@@ -289,7 +289,7 @@ stop_local_vms() {
 
 # 5 : Fonction d'effacement des backups locaux (vzdump)
 remove_local_backups() {
-    log "\n--- 5️⃣ Suppression des backups vzdump locaux ---"
+    log "\n 5️⃣ Suppression des backups vzdump locaux ---"
     local t type vmid node name store path json
 
     for t in "${TARGETS[@]}"; do
@@ -321,7 +321,7 @@ remove_local_backups() {
 
 # 6 : Fonction de suppression des backups sur le serveur PBS (en utilisant l'API)
 remove_pbs_backups() {
-    log "\n--- 6️⃣ Suppression des backups sur PBS ---"
+    log "\n 6️⃣ Suppression des backups sur PBS ---"
     DELETED=0
     ERRORS=0
     for PBS_DATASTORE in "${PBS_DATASTORES[@]}"; do
@@ -354,19 +354,18 @@ remove_pbs_backups() {
                             fi
                         fi
                     else
-                        log "  ➖ Groupe $gtype/$vmid absent dans $ns"
+                        log "    ➖ Groupe $gtype/$vmid absent dans $ns"
                     fi
                 done
             done
         done
     done
     log "\nRésultat PBS : Groupes supprimés : $DELETED | Erreurs : $ERRORS"
-    log "Pour libérer l'espace disque, lancez : proxmox-backup-manager garbage-collection start <datastore>"
 }
 
 # Fonction de suppression des VM et CT (possible seulement si arrêtés)
 delete_local_vms() {
-    log "--- 7️⃣ Suppression locale des VMs/CTs ---"
+    log " 7️⃣ Suppression locale des VMs/CTs ---"
 
     local t type vmid node name errfile raw upid rc lk lockfile
     for t in "${TARGETS[@]}"; do
@@ -435,7 +434,7 @@ delete_local_vms() {
 
 # 8 : Fonction de lancement (manuel ou auto, au choix) du garbage collector (nettoyage des chunks) 
 run_garbage_collection() {
-    log "\n--- 8️⃣ Garbage Collection PBS ---"
+    log "\n 8️⃣ Garbage Collection PBS ---"
     log "ℹ️  La GC libère l'espace des chunks orphelins après suppression des backups."
     log "ℹ️  ⏱️  Selon la taille du datastore, elle peut durer de quelques minutes à plusieurs HEURES."
     log "ℹ️  Elle tourne en arrière-plan sur le serveur PBS : le script n'a pas besoin d'attendre."
